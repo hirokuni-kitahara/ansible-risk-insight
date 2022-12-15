@@ -12,6 +12,8 @@ on:
       - 'test/**'
     branches: ['main', 'release-*']
   pull_request:
+    types:
+      - opened
 
 jobs:
   pytest:
