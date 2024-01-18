@@ -45,6 +45,21 @@ from .utils import (
     recursive_copy_dict,
 )
 
+# base models in scan-core library
+from ansible_scan_core.models import (
+    RunTarget as CoreRunTarget,
+    RunTargetList as CoreRunTargetList,
+)
+
+
+USE_ANSIBLE_SCAN_CORE_LIB = False
+try:
+    _use_ansible_scan_core_lib_str = os.getenv("USE_ANSIBLE_SCAN_CORE_LIB", None)
+    if _use_ansible_scan_core_lib_str:
+        USE_ANSIBLE_SCAN_CORE_LIB = boolean(_use_ansible_scan_core_lib_str)
+except Exception:
+    pass
+
 
 class PlaybookFormatError(Exception):
     pass
@@ -252,7 +267,7 @@ class RunTargetType:
 
 
 @dataclass
-class RunTarget(object):
+class RunTarget(CoreRunTarget):
     type: str = ""
 
     def file_info(self):
@@ -262,7 +277,7 @@ class RunTarget(object):
 
 
 @dataclass
-class RunTargetList(object):
+class RunTargetList(CoreRunTargetList):
     items: List[RunTarget] = field(default_factory=list)
 
     _i: int = 0
@@ -1681,14 +1696,14 @@ class TaskCall(CallObject, RunTarget):
 
 @dataclass
 class AnsibleRunContext(object):
-    sequence: RunTargetList = field(default_factory=RunTargetList)
+    sequence: CoreRunTargetList = field(default_factory=CoreRunTargetList)
     root_key: str = ""
     parent: Object = None
     ram_client: any = None
     scan_metadata: dict = field(default_factory=dict)
 
     # used by rule check
-    current: RunTarget = None
+    current: CoreRunTarget = None
     _i: int = 0
 
     # used if ram generate / other data generation by loop
@@ -1727,33 +1742,33 @@ class AnsibleRunContext(object):
         root_key = tree.items[0].spec.key
         sequence_items = []
         for item in tree.items:
-            if not isinstance(item, RunTarget):
+            if not isinstance(item, CoreRunTarget):
                 continue
             sequence_items.append(item)
-        tl = RunTargetList(items=sequence_items)
+        tl = CoreRunTargetList(items=sequence_items)
         return AnsibleRunContext(
             sequence=tl, root_key=root_key, parent=parent, last_item=last_item, ram_client=ram_client, scan_metadata=scan_metadata
         )
 
     @staticmethod
     def from_targets(
-        targets: List[RunTarget], root_key: str = "", parent: Object = None, last_item: bool = False, ram_client=None, scan_metadata=None
+        targets: List[CoreRunTarget], root_key: str = "", parent: Object = None, last_item: bool = False, ram_client=None, scan_metadata=None
     ):
         if not root_key:
             if len(targets) > 0:
                 root_key = targets[0].spec.key
-        tl = RunTargetList(items=targets)
+        tl = CoreRunTargetList(items=targets)
         return AnsibleRunContext(
             sequence=tl, root_key=root_key, parent=parent, last_item=last_item, ram_client=ram_client, scan_metadata=scan_metadata
         )
 
-    def find(self, target: RunTarget):
+    def find(self, target: CoreRunTarget):
         for t in self.sequence:
             if t.key == target.key:
                 return t
         return None
 
-    def before(self, target: RunTarget):
+    def before(self, target: CoreRunTarget):
         targets = []
         for rt in self.sequence:
             if rt.key == target.key:
@@ -1779,12 +1794,12 @@ class AnsibleRunContext(object):
             scan_metadata=self.scan_metadata,
         )
 
-    def is_end(self, target: RunTarget):
+    def is_end(self, target: CoreRunTarget):
         if len(self) == 0:
             return False
         return target.key == self.sequence[-1].key
 
-    def is_last_task(self, target: RunTarget):
+    def is_last_task(self, target: CoreRunTarget):
         if len(self) == 0:
             return False
         taskcalls = self.taskcalls
@@ -1792,7 +1807,7 @@ class AnsibleRunContext(object):
             return False
         return target.key == taskcalls[-1].key
 
-    def is_begin(self, target: RunTarget):
+    def is_begin(self, target: CoreRunTarget):
         if len(self) == 0:
             return False
         return target.key == self.sequence[0].key
@@ -2161,6 +2176,25 @@ def call_obj_from_spec(spec: Object, caller: CallObject, index: int = 0):
     elif isinstance(spec, Module):
         return ModuleCall.from_spec(spec, caller, index)
     return None
+
+
+models_mapping_to_scan_core = {}
+if USE_ANSIBLE_SCAN_CORE_LIB:
+    from ansible_scan_core.models import (
+        TaskCall as CoreTaskCall,
+        PlayCall as CorePlayCall,
+        PlaybookCall as CorePlaybookCall,
+        TaskFileCall as CoreTaskFileCall,
+        RoleCall as CoreRoleCall,
+    )
+
+    models_mapping_to_scan_core = {
+        TaskCall: CoreTaskCall,
+        PlayCall: CorePlayCall,
+        PlaybookCall: CorePlaybookCall,
+        TaskFileCall: CoreTaskFileCall,
+        RoleCall: CoreRoleCall,
+    }
 
 
 # inherit Repository just for convenience
@@ -2611,7 +2645,10 @@ class TargetResult(JSONSerializable):
         return filtered_nodes[0]
 
     def _filter(self, type):
-        filtered_nodes = [nr for nr in self.nodes if isinstance(nr.node, type)]
+        types = type
+        if USE_ANSIBLE_SCAN_CORE_LIB and type in models_mapping_to_scan_core:
+            types = (type, models_mapping_to_scan_core[type])
+        filtered_nodes = [nr for nr in self.nodes if isinstance(nr.node, types)]
         return TargetResult(target_type=self.target_type, target_name=self.target_name, nodes=filtered_nodes)
 
 

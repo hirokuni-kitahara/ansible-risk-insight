@@ -41,10 +41,12 @@ from .utils import (
     summarize_findings_data,
 )
 
+# base models in scan-core library
 from ansible_scan_core.scanner import (
     ScanData,
     AnsibleScanner,
 )
+from ansible_scan_core.knowledge_base import KBClient
 
 USE_ANSIBLE_SCAN_CORE_LIB = False
 try:
@@ -797,6 +799,8 @@ class ARIScanner(AnsibleScanner):
             self.rules = self.config.rules
         if not self.ram_client:
             self.ram_client = RAMClient(root_dir=self.root_dir)
+        if USE_ANSIBLE_SCAN_CORE_LIB:
+            self.ram_client = KBClient(root_dir=self.root_dir)
         self._parser = Parser(
             do_save=self.do_save,
             use_ansible_doc=self.use_ansible_doc,
