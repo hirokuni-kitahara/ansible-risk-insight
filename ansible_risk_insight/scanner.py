@@ -24,41 +24,92 @@ import datetime
 from dataclasses import dataclass, field
 
 from .models import (
-    Object,
-    Load,
-    LoadType,
-    ObjectList,
-    TaskCall,
-    TaskCallsInTree,
     AnsibleRunContext,
     ARIResult,
 )
 from .loader import (
     get_loader_version,
 )
-from .parser import Parser
-from .model_loader import load_object
-from .tree import TreeLoader
 from .annotators.variable_resolver import resolve_variables
 from .analyzer import analyze
 from .risk_detector import detect
-from .dependency_dir_preparator import (
-    DependencyDirPreparator,
-)
-from .findings import Findings
+
 from .risk_assessment_model import RAMClient
 import ansible_risk_insight.logger as logger
 from .utils import (
-    is_url,
-    is_local_path,
-    escape_url,
-    escape_local_path,
     summarize_findings,
     summarize_findings_data,
-    split_target_playbook_fullpath,
-    split_target_taskfile_fullpath,
-    equal,
 )
+
+from ansible_scan_core.scanner import (
+    ScanData,
+    AnsibleScanner,
+)
+
+USE_ANSIBLE_SCAN_CORE_LIB = False
+try:
+    _use_ansible_scan_core_lib_str = os.getenv("USE_ANSIBLE_SCAN_CORE_LIB", None)
+    if _use_ansible_scan_core_lib_str:
+        from ansible.module_utils.parsing.convert_bool import boolean
+
+        USE_ANSIBLE_SCAN_CORE_LIB = boolean(_use_ansible_scan_core_lib_str)
+except Exception:
+    pass
+
+# If the feature flag for ansible_scan_core library is enabled, import classes/functions from it
+if USE_ANSIBLE_SCAN_CORE_LIB:
+    from ansible_scan_core.parser import Parser
+    from ansible_scan_core.model_loader import load_object
+    from ansible_scan_core.tree import TreeLoader
+    from ansible_scan_core.findings import Findings
+    from ansible_scan_core.dependency_dir_preparator import (
+        DependencyDirPreparator,
+    )
+    from ansible_scan_core.utils import (
+        is_url,
+        is_local_path,
+        escape_url,
+        escape_local_path,
+        split_target_playbook_fullpath,
+        split_target_taskfile_fullpath,
+        equal,
+    )
+
+    from ansible_scan_core.models import (
+        Object,
+        Load,
+        LoadType,
+        ObjectList,
+        TaskCall,
+        TaskCallsInTree,
+    )
+else:
+    # Otherwise, use them in ansible-risk-insight (for backward compatibility)
+    from .parser import Parser
+    from .model_loader import load_object
+    from .tree import TreeLoader
+    from .findings import Findings
+    from .dependency_dir_preparator import (
+        DependencyDirPreparator,
+    )
+    from .utils import (
+        is_url,
+        is_local_path,
+        escape_url,
+        escape_local_path,
+        split_target_playbook_fullpath,
+        split_target_taskfile_fullpath,
+        equal,
+    )
+
+    from .models import (
+        Object,
+        Load,
+        LoadType,
+        ObjectList,
+        TaskCall,
+        TaskCallsInTree,
+    )
 
 
 default_config_path = os.path.expanduser("~/.ari/config")
@@ -148,7 +199,7 @@ logger.set_log_level(config.log_level)
 
 
 @dataclass
-class SingleScan(object):
+class ARIScanData(ScanData):
     type: str = ""
     name: str = ""
     collection_name: str = ""
@@ -182,7 +233,7 @@ class SingleScan(object):
 
     data_report: dict = field(default_factory=dict)
 
-    __path_mappings: dict = field(default_factory=dict)
+    _path_mappings: dict = field(default_factory=dict)
 
     install_dependencies: bool = False
     use_ansible_path: bool = False
@@ -226,6 +277,8 @@ class SingleScan(object):
     _parser: Parser = None
 
     def __post_init__(self):
+        super().__post_init__()
+
         if self.type == LoadType.COLLECTION or self.type == LoadType.ROLE:
             type_root = self.type + "s"
             target_name = self.name
@@ -602,7 +655,7 @@ class SingleScan(object):
         self.resolve_failures = resolve_failures
 
         if self.do_save:
-            root_def_dir = self.__path_mappings["root_definitions"]
+            root_def_dir = self._path_mappings["root_definitions"]
             tree_rel_file = os.path.join(root_def_dir, "tree.json")
             if tree_rel_file != "":
                 lines = []
@@ -629,7 +682,7 @@ class SingleScan(object):
             self.contexts.append(ctx)
 
         if self.do_save:
-            root_def_dir = self.__path_mappings["root_definitions"]
+            root_def_dir = self._path_mappings["root_definitions"]
             tasks_in_t_path = os.path.join(root_def_dir, "tasks_in_trees.json")
             tasks_in_t_lines = []
             for d in taskcalls_in_trees:
@@ -698,61 +751,9 @@ class SingleScan(object):
         self.result = data_report.get("ari_result", None)
         return
 
-    def add_time_records(self, time_records: dict):
-        if self.findings:
-            self.findings.metadata["time_records"] = time_records
-        return
-
-    def count_definitions(self):
-        dep_num = len(self.loaded_dependency_dirs)
-        ext_counts = {}
-        for _, _defs in self.ext_definitions.items():
-            for key, val in _defs.get("definitions", {}).items():
-                _current = ext_counts.get(key, 0)
-                _current += len(val)
-                ext_counts[key] = _current
-        root_counts = {}
-        for key, val in self.root_definitions.get("definitions", {}).items():
-            _current = root_counts.get(key, 0)
-            _current += len(val)
-            root_counts[key] = _current
-        return dep_num, ext_counts, root_counts
-
-    def set_metadata(self, metadata: dict, dependencies: dict):
-        self.target_path = self.make_target_path(self.type, self.name)
-        self.version = metadata.get("version", "")
-        self.hash = metadata.get("hash", "")
-        self.download_url = metadata.get("download_url", "")
-        self.loaded_dependency_dirs = dependencies
-
-    def set_metadata_findings(self):
-        target_name = self.name
-        if self.collection_name:
-            target_name = self.collection_name
-        if self.role_name:
-            target_name = self.role_name
-        metadata = {
-            "type": self.type,
-            "name": target_name,
-            "version": self.version,
-            "source": self.source_repository,
-            "download_url": self.download_url,
-            "hash": self.hash,
-        }
-        dependencies = self.loaded_dependency_dirs
-        self.findings = Findings(
-            metadata=metadata,
-            dependencies=dependencies,
-        )
-
-    def load_index(self):
-        index_location = self.__path_mappings["index"]
-        with open(index_location, "r") as f:
-            self.index = json.load(f)
-
 
 @dataclass
-class ARIScanner(object):
+class ARIScanner(AnsibleScanner):
     config: Config = None
 
     root_dir: str = ""
@@ -780,9 +781,11 @@ class ARIScanner(object):
     silent: bool = False
     output_format: str = ""
 
-    _current: SingleScan = None
+    _current: ARIScanData = None
 
     def __post_init__(self):
+        super().__post_init__()
+
         if not self.config:
             self.config = config
 
@@ -850,7 +853,7 @@ class ARIScanner(object):
         if is_local_path(name) and not playbook_yaml and not taskfile_yaml:
             name = os.path.abspath(name)
 
-        scandata = SingleScan(
+        scandata = ARIScanData(
             type=type,
             name=name,
             collection_name=collection_name,
